@@ -3,7 +3,12 @@ add_executable(picocart64_v1
     picocart64_v1.c
     sram.c
     utils.c
+    eeprom.c
+    joybus.c
 )
+
+pico_generate_pio_header(picocart64_v1 ${CMAKE_CURRENT_LIST_DIR}/joybus_rx.pio)
+pico_generate_pio_header(picocart64_v1 ${CMAKE_CURRENT_LIST_DIR}/joybus_tx.pio)
 
 if(NOT DEFINED REGION)
     message(FATAL_ERROR "Please set the variable REGION to either NTSC or PAL")
@@ -24,8 +29,9 @@ if(NOT DEFINED FLASH_SIZE_MB)
 endif()
 
 # Subtract the 64kB used for firmware + 128kB used for SRAM backup
+# TODO Steal 4k from FLASH region ???
 if(FLASH_SIZE_MB STREQUAL "2")
-    set(N64_ROM_SIZE "1856k")
+    set(N64_ROM_SIZE "1852k")
 elseif(FLASH_SIZE_MB STREQUAL "4")
     set(N64_ROM_SIZE "3904k")
 elseif(FLASH_SIZE_MB STREQUAL "8")

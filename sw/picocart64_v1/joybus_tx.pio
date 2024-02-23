@@ -1,0 +1,68 @@
+.program joybus_tx
+
+.define public T1 10
+.define public T2 20
+.define public T3 10
+
+; 9 bit OSR threshold, no autopull because it interferes with !osre
+public write:
+    set pindirs 1           ; Set pin to output
+write_loop:
+    set pins, 1             ; Set line high for at least 1uS to end pulse
+    pull ifempty block      ; Fetch next byte into OSR if we are done with the current one
+    out x, 1                ; Get bit
+    jmp !osre write_bit     ; If we aren't on the 9th bit, just write the bit
+    jmp x!=y write_stop_bit ; If we are on the 9th bit and it's a 1 that indicates stop bit so write it
+    pull ifempty block      ; If we are on the 9th bit and it's a 0 then we should skip to the next byte
+    out x, 1                ; Get first bit of the next byte
+    jmp write_bit_fast      ; Write it, skipping some of the delays because we spent so much time checking the 9th bit
+write_bit:
+    nop [3]
+write_bit_fast:
+    nop [T3 - 9]
+    set pins, 0 [T1 - 1]    ; Pulse always starts with low for 1uS
+    mov pins, x [T2 - 2]    ; Set line according to bit value for 2uS
+    jmp write_loop
+write_stop_bit:
+    nop [T3 - 6]
+    set pins, 0 [T1 - 1]
+    set pins, 1 [T2 - 2]
+    set pindirs 0           ; Done writing, set pin to input
+    irq wait 1
+
+
+% c-sdk {
+#include <hardware/clocks.h>
+
+static inline pio_sm_config joybus_tx_program_get_config(PIO pio, uint sm, uint offset, uint pin) {
+    pio_gpio_init(pio, pin);
+
+    pio_sm_config c = joybus_tx_program_get_default_config(offset);
+    sm_config_set_out_pins(&c, pin, 1);
+    sm_config_set_set_pins(&c, pin, 1);
+    // Shift to left, no autopull, 9 bit
+    sm_config_set_out_shift(&c, false, false, 9);
+    
+    int cycles_per_bit = joybus_tx_T1 + joybus_tx_T2 + joybus_tx_T3;
+    int bitrate = 250000;
+    float div = clock_get_hz(clk_sys) / (cycles_per_bit * bitrate);
+    sm_config_set_clkdiv(&c, div);
+
+    // Set Y to 0
+    pio_sm_exec(pio, sm, pio_encode_set(pio_y, 0));
+
+    return c;
+}
+
+static inline void joybus_tx_program_send_init(
+    PIO pio,
+    uint sm,
+    uint offset,
+    uint pin,
+    pio_sm_config *c
+) {
+    pio_sm_init(pio, sm, offset, c);
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+%}

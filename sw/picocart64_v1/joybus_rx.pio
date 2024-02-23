@@ -1,0 +1,90 @@
+.program joybus_rx
+.side_set 1 opt
+
+.define public T1 10
+.define public T2 20
+.define public T3 10
+
+.define public SIDESET_PIN 28   ; FIXME Can we use pin 31 instead?
+
+
+public read:
+    set pindirs 0 side 0    ; Set S_DAT pin to input / Set JMP pin to 0 (i.e. command code not processed)
+    set x, 0                ; Read 1 byte (command code)
+read_byte_loop:
+    set y, 7                ; Read 8 bits
+read_loop:
+    ; Wait for falling edge, then wait until halfway through the 2uS which represents the bit value ([T1 + T2 / 2 - 1])
+    wait 0 pin 0 [7]
+    nop [7]
+    nop [3]
+    in pins, 1              ; Read bit value
+    wait 1 pin 0            ; Done reading, so make sure we wait for the line to go high again before restarting the loop
+    jmp y-- read_loop       ; Go read next bit
+    jmp x-- read_byte_loop  ; Go read next byte
+    jmp pin raise_irq       ; If command code was already processed, we are done reading command and data. Raise IRQ
+check_command:
+    mov y, isr              ; Load command code into Y register
+    jmp !y raise_irq        ; If command is 0x00, there are no data to read, raise IRQ
+check_read:
+    push                    ; Push command code into its own FIFO word
+    set x, 4                ; If command is 0x04, read one data byte (block number)
+    jmp x!=y check_write    ; Otherwise check other command codes
+    set x, 0 side 1         ; Need to read 1 byte of command data / Set JMP pin to 1 (i.e. command code is processed)
+    jmp read_byte_loop      ; Go read data byte
+check_write:
+    set x, 5                ; If command is 0x04, read nine data bytes (block number + 8 bytes of data)
+    jmp x!=y invalid_command    ; Unknown / invalid command?
+    set x, 8 side 1         ; Need to read 9 bytes / Set JMP pin to 1 (i.e. command code is processed)
+                            ; Autopush is enabled with 32 bits threshold to avoid overflowing ISR when reading more than 4 bytes at once
+    jmp read_byte_loop      ; Go read data bytes
+invalid_command:
+                            ; What to do with invalid commands? Raise IRQ and leave it to CPU?
+raise_irq:
+    push                    ; Push remaining data bytes
+    irq wait 0              ; Raise IRQ
+endloop:
+    jmp endloop             ; Wait indefinitely until program is reset by the CPU for the next read
+
+
+
+% c-sdk {
+#include <hardware/clocks.h>
+
+static inline pio_sm_config joybus_rx_program_get_config(PIO pio, uint sm, uint offset, uint pin) {
+    pio_gpio_init(pio, pin);
+    pio_gpio_init(pio, joybus_rx_SIDESET_PIN);
+    pio_sm_set_consecutive_pindirs(pio, sm, joybus_rx_SIDESET_PIN, 1, true); 		
+
+    pio_sm_config c = joybus_rx_program_get_default_config(offset);
+    sm_config_set_in_pins(&c, pin);
+    
+    // Side-set pin is toggled when command code is processed
+    sm_config_set_sideset_pins(&c, joybus_rx_SIDESET_PIN);
+    // Jump pin is used to check if command code has been processed
+    sm_config_set_jmp_pin(&c, joybus_rx_SIDESET_PIN);
+    
+    // Autopush is enabled with 32 bits threshold to avoid overflowing ISR when reading more than 4 bytes at once
+    sm_config_set_in_shift(&c, false, true, 32);
+
+    int cycles_per_bit = joybus_rx_T1 + joybus_rx_T2 + joybus_rx_T3;
+    int bitrate = 250000;
+    float div = clock_get_hz(clk_sys) / (cycles_per_bit * bitrate);
+    sm_config_set_clkdiv(&c, div);
+
+    return c;
+}
+
+static inline void joybus_rx_program_receive_init(
+    PIO pio,
+    uint sm,
+    uint offset,
+    uint pin,
+    pio_sm_config *c
+) {
+    pio_sm_init(pio, sm, offset, c);
+
+    pio_sm_set_enabled(pio, sm, true);
+}
+
+%}

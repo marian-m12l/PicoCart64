@@ -21,13 +21,16 @@
     __stack (== StackTop)
 */
 
-__N64_ROM_LENGTH__ = DEFINED(__N64_ROM_LENGTH__) ? __N64_ROM_LENGTH__ : 1856k;
+__N64_ROM_LENGTH__ = DEFINED(__N64_ROM_LENGTH__) ? __N64_ROM_LENGTH__ : 1852k;
+
+/* TODO Steal 4k from FLASH region ??? */
 
 MEMORY
 {
     FLASH(rx) : ORIGIN = 0x10000000, LENGTH = 64k
     N64_SRAM(rx) : ORIGIN = 0x10010000, LENGTH = 128k
-    N64_ROM(rx) : ORIGIN = 0x10030000, LENGTH = __N64_ROM_LENGTH__
+    N64_EEPROM(rx) : ORIGIN = 0x10030000, LENGTH = 4k
+    N64_ROM(rx) : ORIGIN = 0x10031000, LENGTH = __N64_ROM_LENGTH__
     RAM(rwx) : ORIGIN =  0x20000000, LENGTH = 256k
     SCRATCH_X(rwx) : ORIGIN = 0x20040000, LENGTH = 4k
     SCRATCH_Y(rwx) : ORIGIN = 0x20041000, LENGTH = 4k
@@ -258,6 +261,10 @@ SECTIONS
     .n64_sram : {
         *(.n64_sram)
     } > N64_SRAM
+
+    .n64_eeprom : {
+        *(.n64_eeprom)
+    } > N64_EEPROM
 
     .n64_rom : {
         *(.n64_rom.header)

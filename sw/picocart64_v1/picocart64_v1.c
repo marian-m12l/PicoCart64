@@ -21,6 +21,8 @@
 #include "n64_pi_task.h"
 #include "picocart64_pins.h"
 #include "sram.h"
+#include "eeprom.h"
+#include "joybus.h"
 #include "utils.h"
 
 #define UART_TX_PIN (28)
@@ -34,11 +36,14 @@
 // Use same priority to force round-robin scheduling
 #define CIC_TASK_PRIORITY     (tskIDLE_PRIORITY + 1UL)
 #define SECOND_TASK_PRIORITY  (tskIDLE_PRIORITY + 1UL)
+#define EEPROM_TASK_PRIORITY  (tskIDLE_PRIORITY + 1UL)
 
 static StaticTask_t cic_task;
 static StaticTask_t second_task;
+static StaticTask_t eeprom_task;
 static StackType_t cic_task_stack[4 * 1024 / sizeof(StackType_t)];
 static StackType_t second_task_stack[4 * 1024 / sizeof(StackType_t)];
+static StackType_t eeprom_task_stack[4 * 1024 / sizeof(StackType_t)];
 
 /*
 
@@ -80,6 +85,9 @@ void cic_task_entry(__unused void *params)
 	//       or maybe we don't have to care?
 	sram_load_from_flash();
 
+	// Load EEPROM from flash
+	eeprom_load_from_flash();
+
 	while (1) {
 		n64_cic_run();
 
@@ -88,6 +96,9 @@ void cic_task_entry(__unused void *params)
 
 		// Commit SRAM to flash
 		sram_save_to_flash();
+
+		// Commit EEPROM to flash
+		eeprom_save_to_flash();
 
 		printf("CIC task restarting\n");
 		vPortYield();
@@ -126,10 +137,110 @@ void second_task_entry(__unused void *params)
 	}
 }
 
+
+// S_DAT pin
+#define JOYBUS_PIN 26
+
+// Populated by IRQ handler with data incoming from pio program / console S_DAT
+volatile uint32_t incoming[4];
+volatile uint8_t incoming_length = 0;
+
+// Joybus abstraction
+joybus_port_t joybus_rx_port;
+joybus_port_t joybus_tx_port;
+
+#define PROBE 0x00
+#define RESET 0xFF
+#define READ_EEPROM 0x04
+#define WRITE_EEPROM 0x05
+
+#define EEPROM_4K 0x8000
+#define EEPROM_16K 0xC000
+
+typedef struct __attribute__((packed)) {
+    uint16_t device;
+    uint8_t status;
+} n64_status_t;
+
+n64_status_t eeprom_status = (n64_status_t){
+  .device = EEPROM_16K,
+  .status = 0x00,
+};
+
+static void pio_rx_irq_func(void) {
+  // Read all incoming words from pio RX FIFO
+  incoming_length = 0;
+  while (!pio_sm_is_rx_fifo_empty(joybus_rx_port.pio, joybus_rx_port.sm)) {
+    incoming[incoming_length++] = pio_sm_get_blocking(joybus_rx_port.pio, joybus_rx_port.sm);
+  }
+  pio_interrupt_clear(joybus_rx_port.pio, 0);
+}
+
+static void pio_tx_irq_func(void) {
+  // Done transmitting, switch to rx program
+  joybus_port_terminate_tx(&joybus_tx_port);
+  pio_interrupt_clear(joybus_tx_port.pio, 1);
+  joybus_port_init_rx(&joybus_rx_port, JOYBUS_PIN, pio_rx_irq_func);
+}
+
+void send_response(uint8_t* data, uint8_t length) {
+  // Switch to tx program
+  joybus_port_terminate_rx(&joybus_rx_port);
+  joybus_port_init_tx(&joybus_tx_port, JOYBUS_PIN, pio_tx_irq_func);
+  joybus_send_bytes(&joybus_tx_port, data, length);
+}
+
+uint32_t swap32(uint32_t data) {
+  return ((data>>24)&0xff) |
+          ((data<<8)&0xff0000) |
+          ((data>>8)&0xff00) |
+          ((data<<24)&0xff000000);
+}
+
+void eeprom_task_entry(__unused void *params)
+{
+	printf("eeprom_task_entry\n");
+
+	while (true) {
+		// TODO delay ?? vTaskDelay(1000);
+		
+		// TODO yield?? vPortYield();
+
+		//tight_loop_contents();
+		vPortYield();
+
+		if (incoming_length > 0) {
+			// Read and handle incoming command
+			uint8_t command = incoming[0] & 0xff;
+			switch (command) {
+			case RESET:
+			case PROBE:
+				send_response((uint8_t *)&eeprom_status, sizeof(n64_status_t));
+				break;
+			case READ_EEPROM:
+				send_response(&eeprom[incoming[1]*8], 8);
+				break;
+			case WRITE_EEPROM:
+				send_response(0, 1);
+				uint8_t block = (incoming[1] >> 24);
+				uint8_t* address = (uint8_t*)(eeprom) + block*8;
+				uint32_t data1 = swap32((incoming[1] << 8) | (incoming[2] >> 24));
+				uint32_t data2 = swap32((incoming[2] << 8) | (incoming[3] & 0xff));
+				memcpy(address, &data1, 4);
+				memcpy(address + 4, &data2, 4);
+				break;
+			}
+
+			incoming_length = 0;
+		}
+	}
+}
+
 void vLaunch(void)
 {
 	xTaskCreateStatic(cic_task_entry, "CICThread", configMINIMAL_STACK_SIZE, NULL, CIC_TASK_PRIORITY, cic_task_stack, &cic_task);
 	xTaskCreateStatic(second_task_entry, "SecondThread", configMINIMAL_STACK_SIZE, NULL, SECOND_TASK_PRIORITY, second_task_stack, &second_task);
+	xTaskCreateStatic(eeprom_task_entry, "EEPROMThread", configMINIMAL_STACK_SIZE, NULL, EEPROM_TASK_PRIORITY, eeprom_task_stack, &eeprom_task);
 
 	/* Start the tasks and timer running. */
 	vTaskStartScheduler();
@@ -166,6 +277,9 @@ int main(void)
 
 	// Enable pull up on N64_CIC_DIO since there is no external one.
 	gpio_pull_up(N64_CIC_DIO);
+	
+
+  	joybus_port_init_rx(&joybus_rx_port, JOYBUS_PIN, pio_rx_irq_func);
 
 	// Init UART on pin 28/29
 	stdio_async_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, UART_RX_PIN);
