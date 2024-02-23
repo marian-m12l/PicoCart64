@@ -78,6 +78,12 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTimerTaskTCBBuffer, Stack
 	*pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
 }
 
+void save_to_flash(void)
+{
+	sram_save_to_flash();
+	eeprom_save_to_flash();
+}
+
 void cic_task_entry(__unused void *params)
 {
 	printf("cic_task_entry\n");
@@ -96,8 +102,7 @@ void cic_task_entry(__unused void *params)
 	// n64_cic_set_dd_mode(false);
 
 	// TODO: Performing the write to flash in a separate task is the way to go
-	n64_cic_task(sram_save_to_flash);
-	n64_cic_task(eeprom_save_to_flash);
+	n64_cic_task(save_to_flash);
 }
 
 void second_task_entry(__unused void *params)
