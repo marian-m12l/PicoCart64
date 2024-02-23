@@ -1,6 +1,9 @@
-# PicoCart64-lite v1.2
+# PicoCart64-lite v1.4
 
 ## Errata
+
+### v1.4
+- None so far
 
 ### v1.3
 - None so far
@@ -16,6 +19,11 @@
 
 
 ## Changelog
+
+### v1.4
+- Enabled Tented vias
+- Minor silkscreen adjustments
+- Minor soldermask adjustments (JP1)
 
 ### v1.3
 - Added JP1, a solder bridge to make it possible to use the WeAct RP2040 third party Pico board

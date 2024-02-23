@@ -12,6 +12,7 @@
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
+#include "hardware/flash.h"
 #include "hardware/irq.h"
 
 #include "stdio_async_uart.h"
@@ -32,11 +33,10 @@
 
 #define ENABLE_N64_PI 1
 
-// Priority 0 = lowest, 31 = highest
-// Use same priority to force round-robin scheduling
-#define CIC_TASK_PRIORITY     (tskIDLE_PRIORITY + 1UL)
-#define SECOND_TASK_PRIORITY  (tskIDLE_PRIORITY + 1UL)
-#define EEPROM_TASK_PRIORITY  (tskIDLE_PRIORITY + 1UL)
+// Priority 0 = lowest, 3 = highest
+#define CIC_TASK_PRIORITY     (3UL)
+#define SECOND_TASK_PRIORITY  (1UL)
+#define EEPROM_TASK_PRIORITY  (1UL)
 
 static StaticTask_t cic_task;
 static StaticTask_t second_task;
@@ -44,6 +44,8 @@ static StaticTask_t eeprom_task;
 static StackType_t cic_task_stack[4 * 1024 / sizeof(StackType_t)];
 static StackType_t second_task_stack[4 * 1024 / sizeof(StackType_t)];
 static StackType_t eeprom_task_stack[4 * 1024 / sizeof(StackType_t)];
+
+uint32_t g_flash_jedec_id;
 
 /*
 
@@ -88,22 +90,14 @@ void cic_task_entry(__unused void *params)
 	// Load EEPROM from flash
 	eeprom_load_from_flash();
 
-	while (1) {
-		n64_cic_run();
+	n64_cic_hw_init();
+	// n64_cic_reset_parameters();
+	// n64_cic_set_parameters(params);
+	// n64_cic_set_dd_mode(false);
 
-		// cic_run returns when N64_CR goes low, i.e.
-		// user presses the reset button, or the N64 loses power.
-
-		// Commit SRAM to flash
-		sram_save_to_flash();
-
-		// Commit EEPROM to flash
-		eeprom_save_to_flash();
-
-		printf("CIC task restarting\n");
-		vPortYield();
-	}
-
+	// TODO: Performing the write to flash in a separate task is the way to go
+	n64_cic_task(sram_save_to_flash);
+	n64_cic_task(eeprom_save_to_flash);
 }
 
 void second_task_entry(__unused void *params)
@@ -248,8 +242,22 @@ void vLaunch(void)
 
 #include "rom_vars.h"
 
+uint32_t flash_get_jedec_id(void)
+{
+	const uint8_t read_jedec_id = 0x9f;
+	uint8_t txbuf[4] = { read_jedec_id };
+	uint8_t rxbuf[4] = { 0 };
+	txbuf[0] = read_jedec_id;
+	flash_do_cmd(txbuf, rxbuf, 4);
+
+	return rxbuf[1] | (rxbuf[2] << 8) | (rxbuf[3] << 16);
+}
+
 int main(void)
 {
+	// First, let's probe the Flash ID
+	g_flash_jedec_id = flash_get_jedec_id();
+
 	// Overclock!
 	// The external flash should be rated to 133MHz,
 	// but since it's used with a 2x clock divider,

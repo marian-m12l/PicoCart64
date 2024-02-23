@@ -12,7 +12,6 @@
 #include <libdragon.h>
 
 #include "git_info.h"
-#include "shell.h"
 
 // picocart64_shared
 #include "pc64_regs.h"
@@ -224,11 +223,14 @@ static void configure_sram(void)
 	IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x03);
 
 #else
-	// Fast SRAM access (should match SDK values)
-	IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x40);
+
+	// Fast SRAM access (matches default values from SDK)
+	IO_WRITE(PI_BSD_DOM2_LAT_REG, 0x05);
 	IO_WRITE(PI_BSD_DOM2_PWD_REG, 0x0C);
-	IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x07);
-	IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x03);
+	IO_WRITE(PI_BSD_DOM2_PGS_REG, 0x0D);
+	IO_WRITE(PI_BSD_DOM2_RLS_REG, 0x02);
+
+	// LAT: 0x04 works when banked mode is disabled
 #endif
 }
 
@@ -237,6 +239,7 @@ int main(void)
 	uint32_t *facit_buf32 = (uint32_t *) facit_buf;
 	uint32_t *read_buf32 = (uint32_t *) read_buf;
 	uint16_t *read_buf16 = (uint16_t *) read_buf;
+	int fail_count = 0;
 
 	configure_sram();
 
@@ -254,9 +257,20 @@ int main(void)
 	if (read_buf32[0] == PC64_MAGIC) {
 		printf("[ OK ] MAGIC = 0x%08lX.\n", read_buf32[0]);
 	} else {
+		fail_count++;
 		printf("[FAIL] MAGIC = 0x%08lX.\n", read_buf32[0]);
 	}
 
+	///////////////////////////////////////////////////////////////////////////
+
+	// Read the Flash JEDEC ID
+	data_cache_hit_writeback_invalidate(read_buf, sizeof(read_buf));
+	pi_read_raw(read_buf, PC64_CIBASE_ADDRESS_START, PC64_REGISTER_FLASH_JEDEC_ID, sizeof(uint32_t));
+	printf("[ -- ] Flash JEDEC ID = 0x%08lX.\n", read_buf32[0]);
+
+	if (read_buf32[0] != 0x001540ef) {
+		printf("[ ?? ] Non-standard flash detected\n");
+	}
 	///////////////////////////////////////////////////////////////////////////
 
 	// Print Hello from the N64
@@ -279,10 +293,11 @@ int main(void)
 
 	// Compare SRAM with the facit
 	if (memcmp(facit_buf, read_buf, sizeof(read_buf)) != 0) {
-		printf("[FAIL] SRAM was not backed up properly.\n");
+		printf("[////] SRAM was not backed up properly.\n");
+		printf("[ !! ] Should pass if you press the N64 reset button.\n");
 
 		for (int i = 0; i < sizeof(facit_buf) / sizeof(uint32_t); i++) {
-			if (facit_buf32[i] != read_buf[i]) {
+			if (facit_buf32[i] != read_buf32[i]) {
 				printf("       Error @%d: facit %08lX != sram %08lX\n", i, facit_buf32[i], read_buf32[i]);
 				break;
 			}
@@ -305,16 +320,17 @@ int main(void)
 
 	// Compare SRAM with the facit
 	if (memcmp(facit_buf, read_buf, sizeof(read_buf)) != 0) {
-		printf("[FAIL] SRAM (volatile) did not verify correctly.\n");
+		fail_count++;
+		printf("[FAIL] Volatile SRAM did not verify correctly.\n");
 
 		for (int i = 0; i < sizeof(facit_buf) / sizeof(uint32_t); i++) {
-			if (facit_buf32[i] != read_buf[i]) {
+			if (facit_buf32[i] != read_buf32[i]) {
 				printf("       Error @%d: facit %08lX != sram %08lX\n", i, facit_buf32[i], read_buf32[i]);
 				break;
 			}
 		}
 	} else {
-		printf("[ OK ] (volatile) SRAM verified correctly.\n");
+		printf("[ OK ] Volatile SRAM verified correctly.\n");
 	}
 
 	///////////////////////////////////////////////////////////////////////////
@@ -325,7 +341,7 @@ int main(void)
 	pc64_rand_seed(0);
 
 	// Compare buffer with RNG
-	printf("[ -- ] RNG Test: ");
+	printf("[ -- ] PicoCart64 RNG stress-test: ");
 	bool rng_ok = true;
 	for (int j = 0; j < 64 && rng_ok; j++) {
 		// Read back 1Mbit of RAND values
@@ -348,6 +364,7 @@ int main(void)
 	if (rng_ok) {
 		printf("\n[ OK ] Random stress test verified correctly.\n");
 	} else {
+		fail_count++;
 		printf("\n[FAIL] Random stress test failed.\n");
 	}
 
@@ -366,23 +383,41 @@ int main(void)
 	if (read_buf32[0] == PC64_MAGIC) {
 		printf("[ OK ] (second time) MAGIC = 0x%08lX.\n", read_buf32[0]);
 	} else {
+		fail_count++;
 		printf("[FAIL] (second time) MAGIC = 0x%08lX.\n", read_buf32[0]);
 		printf("       PicoCart64 might stall now and require a power cycle.\n");
 	}
 
-	console_render();
-
-	/* Start the shell if the user presses start */
-	printf("\n\nPress START to continue to the shell...\n");
-	controller_init();
-	while (true) {
-		controller_scan();
-		struct controller_data keys = get_keys_pressed();
-		if (keys.c[0].start) {
-			printf("Start pressed.\n");
-			break;
-		}
+	if (fail_count == 0) {
+		printf("\n[ OK ] Test is finished. All tests passed.\n");
+	} else {
+		printf("\n[FAIL] Test is finished. %d tests failed.\n", fail_count);
 	}
+	printf("\n");
 
-	start_shell();
+	// Draw something that moves forever
+	int count = 0;
+	while (1) {
+		display_context_t disp = 0;
+		while (!(disp = display_lock())) ;
+
+		const int width = 60;
+		const int height = 240;
+
+		count++;
+
+		int x = count % 256;
+		if (x < 128)
+			x = 255 - x;
+
+		if (fail_count > 0) {
+			graphics_draw_box(disp, 0, 0, width, height, graphics_make_color(x, 0, 0, 255));
+			graphics_draw_box(disp, 0, count % (height - 10), width, 10, graphics_make_color(127, 127, 127, 255));
+		} else {
+			graphics_draw_box(disp, 0, 0, width, height, graphics_make_color(0, x, 0, 255));
+			graphics_draw_box(disp, 0, count % 230, width, 10, graphics_make_color(127, 127, 127, 255));
+		}
+
+		display_show(disp);
+	}
 }
