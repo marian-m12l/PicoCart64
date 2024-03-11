@@ -29,6 +29,8 @@
 #include "rom_vars.h"
 #include "rom.h"
 
+bool initialized = false;
+
 uint16_t rom_mapping[MAPPING_TABLE_LEN];
 
 #if COMPRESSED_ROM
@@ -61,9 +63,17 @@ void n64_pi_run(void)
 {
 	// Init PIO
 	PIO pio = pio0;
-	uint offset = pio_add_program(pio, &n64_pi_program);
+	uint offset;
+	if (initialized) {
+		// De-init PIO
+		pio_remove_program(pio, &n64_pi_program, offset);
+		initialized = false;
+	}
+
+	offset = pio_add_program(pio, &n64_pi_program);
 	n64_pi_program_init(pio, 0, offset);
 	pio_sm_set_enabled(pio, 0, true);
+	initialized = true;
 
 	// Wait for reset to be released
 	while (gpio_get(N64_COLD_RESET) == 0) {

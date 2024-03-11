@@ -78,67 +78,11 @@ void vApplicationGetTimerTaskMemory(StaticTask_t ** ppxTimerTaskTCBBuffer, Stack
 	*pulTimerTaskStackSize = configTIMER_TASK_STACK_DEPTH;
 }
 
-void save_to_flash(void)
-{
-	sram_save_to_flash();
-	eeprom_save_to_flash();
-}
-
-void cic_task_entry(__unused void *params)
-{
-	printf("cic_task_entry\n");
-
-	// Load SRAM backup from external flash
-	// TODO: How do we detect if it's uninitialized (config area in flash?),
-	//       or maybe we don't have to care?
-	sram_load_from_flash();
-
-	// Load EEPROM from flash
-	eeprom_load_from_flash();
-
-	n64_cic_hw_init();
-	// n64_cic_reset_parameters();
-	// n64_cic_set_parameters(params);
-	// n64_cic_set_dd_mode(false);
-
-	// TODO: Performing the write to flash in a separate task is the way to go
-	n64_cic_task(save_to_flash);
-}
-
-void second_task_entry(__unused void *params)
-{
-	uint32_t count = 0;
-
-	printf("second_task_entry\n");
-
-	while (true) {
-		vTaskDelay(1000);
-		count++;
-
-		// Set to 1 to print stack watermarks.
-		// Printing is synchronous and interferes with the CIC emulation.
-#if 0
-		// printf("Second task heartbeat: %d\n", count);
-		// vPortYield();
-
-		if (count > 10) {
-			printf("watermark: %d\n", uxTaskGetStackHighWaterMark(NULL));
-			vPortYield();
-
-			printf("watermark second_task: %d\n", uxTaskGetStackHighWaterMark((TaskHandle_t) & second_task));
-			vPortYield();
-
-			printf("watermark cic_task: %d\n", uxTaskGetStackHighWaterMark((TaskHandle_t) & cic_task));
-			vPortYield();
-		}
-#endif
-
-	}
-}
-
 
 // S_DAT pin
-#define JOYBUS_PIN 26
+// FIXME On WeAct board, GPIO26 is not broken out --> use GPIO27 (Pin B in prototyping area)
+//#define JOYBUS_PIN 26
+#define JOYBUS_PIN 27
 
 // Populated by IRQ handler with data incoming from pio program / console S_DAT
 volatile uint32_t incoming[4];
@@ -162,7 +106,7 @@ typedef struct __attribute__((packed)) {
 } n64_status_t;
 
 n64_status_t eeprom_status = (n64_status_t){
-  .device = EEPROM_16K,
+  .device = EEPROM_4K,	//EEPROM_16K,
   .status = 0x00,
 };
 
@@ -232,6 +176,73 @@ void eeprom_task_entry(__unused void *params)
 
 			incoming_length = 0;
 		}
+	}
+}
+
+void save_to_flash(void)
+{
+	// Disable PI bus and joybus during save
+	joybus_port_terminate_rx(&joybus_rx_port);
+	joybus_port_terminate_tx(&joybus_tx_port);
+	multicore_reset_core1();
+
+	sram_save_to_flash();
+	eeprom_save_to_flash();
+
+	// Restart PI bus and joybus
+  	joybus_port_init_rx(&joybus_rx_port, JOYBUS_PIN, pio_rx_irq_func);
+	multicore_launch_core1(n64_pi_run);
+}
+
+void cic_task_entry(__unused void *params)
+{
+	printf("cic_task_entry\n");
+
+	// Load SRAM backup from external flash
+	// TODO: How do we detect if it's uninitialized (config area in flash?),
+	//       or maybe we don't have to care?
+	sram_load_from_flash();
+
+	// Load EEPROM from flash
+	eeprom_load_from_flash();
+
+		n64_cic_hw_init();
+	// n64_cic_reset_parameters();
+	// n64_cic_set_parameters(params);
+	// n64_cic_set_dd_mode(false);
+	
+		// TODO: Performing the write to flash in a separate task is the way to go
+		n64_cic_task(save_to_flash);
+		}
+
+void second_task_entry(__unused void *params)
+{
+	uint32_t count = 0;
+
+	printf("second_task_entry\n");
+
+	while (true) {
+		vTaskDelay(1000);
+		count++;
+
+		// Set to 1 to print stack watermarks.
+		// Printing is synchronous and interferes with the CIC emulation.
+#if 0
+		// printf("Second task heartbeat: %d\n", count);
+		// vPortYield();
+
+		if (count > 10) {
+			printf("watermark: %d\n", uxTaskGetStackHighWaterMark(NULL));
+			vPortYield();
+
+			printf("watermark second_task: %d\n", uxTaskGetStackHighWaterMark((TaskHandle_t) & second_task));
+			vPortYield();
+
+			printf("watermark cic_task: %d\n", uxTaskGetStackHighWaterMark((TaskHandle_t) & cic_task));
+			vPortYield();
+		}
+#endif
+
 	}
 }
 

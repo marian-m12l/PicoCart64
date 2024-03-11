@@ -5,7 +5,7 @@
 .define public T2 20
 .define public T3 10
 
-.define public SIDESET_PIN 28   ; FIXME Can we use pin 31 instead?
+.define public SIDESET_PIN 29   ; FIXME Can we use pin 31 instead?
 
 
 public read:

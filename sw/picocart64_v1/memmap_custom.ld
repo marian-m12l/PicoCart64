@@ -262,7 +262,7 @@ SECTIONS
         *(.n64_sram)
     } > N64_SRAM
 
-    .n64_eeprom : {
+    .n64_eeprom (NOLOAD) : {
         *(.n64_eeprom)
     } > N64_EEPROM
 
